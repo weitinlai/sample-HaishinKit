@@ -13,7 +13,8 @@
 		01FC47292F00F855003FED5F /* sample2.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 01FC47282F00F855003FED5F /* sample2.jpg */; };
 		01FC472B2F00F855003FED5F /* sample3.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 01FC472A2F00F855003FED5F /* sample3.jpg */; };
 		01FC472D2F00F855003FED5F /* sample.wav in Resources */ = {isa = PBXBuildFile; fileRef = 01FC472C2F00F855003FED5F /* sample.wav */; };
-		01FC47CB2F02E8F5003FED5F /* AudioEngineCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01FC47CA2F02E8F5003FED5F /* AudioEngineCapture.swift */; };
+		01FC47CD2F03BBAF003FED5F /* AudioEngineCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01FC47CC2F03BBAF003FED5F /* AudioEngineCapture.swift */; };
+		01FC47CF2F03BBBA003FED5F /* AudioSourceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01FC47CE2F03BBBA003FED5F /* AudioSourceService.swift */; };
 		A1 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2 /* AppDelegate.swift */; };
 		A3 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4 /* ViewController.swift */; };
 		A5 /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = A6 /* Main.storyboard */; };
@@ -26,7 +27,8 @@
 		01FC47282F00F855003FED5F /* sample2.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = sample2.jpg; sourceTree = "<group>"; };
 		01FC472A2F00F855003FED5F /* sample3.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = sample3.jpg; sourceTree = "<group>"; };
 		01FC472C2F00F855003FED5F /* sample.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = sample.wav; sourceTree = "<group>"; };
-		01FC47CA2F02E8F5003FED5F /* AudioEngineCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngineCapture.swift; sourceTree = "<group>"; };
+		01FC47CC2F03BBAF003FED5F /* AudioEngineCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngineCapture.swift; sourceTree = "<group>"; };
+		01FC47CE2F03BBBA003FED5F /* AudioSourceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSourceService.swift; sourceTree = "<group>"; };
 		A10 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		A11 /* HaishinKitTwitch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HaishinKitTwitch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A12 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -60,7 +62,8 @@
 		A15 /* HaishinKitTwitch */ = {
 			isa = PBXGroup;
 			children = (
-				01FC47CA2F02E8F5003FED5F /* AudioEngineCapture.swift */,
+				01FC47CE2F03BBBA003FED5F /* AudioSourceService.swift */,
+				01FC47CC2F03BBAF003FED5F /* AudioEngineCapture.swift */,
 				01FC47262F00F855003FED5F /* sample1.jpg */,
 				01FC47282F00F855003FED5F /* sample2.jpg */,
 				01FC472A2F00F855003FED5F /* sample3.jpg */,
@@ -165,9 +168,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				01FC47CF2F03BBBA003FED5F /* AudioSourceService.swift in Sources */,
 				A3 /* ViewController.swift in Sources */,
-				01FC47CB2F02E8F5003FED5F /* AudioEngineCapture.swift in Sources */,
 				A1 /* AppDelegate.swift in Sources */,
+				01FC47CD2F03BBAF003FED5F /* AudioEngineCapture.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

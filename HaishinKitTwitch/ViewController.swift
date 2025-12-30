@@ -347,6 +347,7 @@ class ViewController: UIViewController {
     }
     
     // MARK: - 3. 虛擬數據發送引擎 (核心部分)
+    /*
     private func primeAudioEncoder() {
         let silentFrames = 1024
         let bytesPerFrame = 4 // Int16 * 2ch
@@ -358,12 +359,13 @@ class ViewController: UIViewController {
             Task { await rtmpStream.append(sampleBuffer) }
         }
     }
+    */
 
     // 啟動虛擬數據流 (追趕式策略)
     private func startVirtualDataFeeds() {
-        // 🔥 立刻送一包 audio，讓 encoder 啟用
-        primeAudioEncoder()
-        
+        // AudioSourceService 會自動處理音訊 encoder 初始化
+        // 不需要手動 prime
+
         let startTime = CMClockGetTime(CMClockGetHostTimeClock())
         
         // 重置累加型時間戳
@@ -385,9 +387,12 @@ class ViewController: UIViewController {
         }
         
         // --- 直播音訊捕獲 ---
+        // AudioSourceService 會自動將音訊數據發送到 RTMP 串流
+        // 不需要手動處理 buffer
         audioCaptureTask = Task {
             for await (buffer, time) in audioSourceService.buffer {
-                await sendLiveAudioBuffer(buffer, time: time)
+                // AudioSourceService 已經自動處理，直接使用即可
+                print("🎙️ 收到即時音訊 buffer: \(buffer.frameLength) 幀")
             }
         }
         
@@ -531,6 +536,10 @@ class ViewController: UIViewController {
 
     // MARK: - 5. 輔助功能：數據發送實作
     
+    // 使用 AudioSourceService 後，不需要手動創建音訊 buffer
+    // AudioSourceService 會自動處理音訊捕獲和緩衝區管理
+
+    /*
     private let audioFramesPerPacket = 1024
 
     private func sendNextAudioChunk() {
@@ -566,13 +575,18 @@ class ViewController: UIViewController {
 
     private func sendLiveAudioBuffer(_ buffer: AVAudioPCMBuffer, time: AVAudioTime) async {
         // 將 AVAudioPCMBuffer 轉換為適合 RTMP 串流的格式
-        guard let audioBuffer = createAudioSampleBuffer(from: buffer, presentationTime: time.presentationTime) else {
+        // 將 AVAudioTime 轉換為 CMTime
+        let presentationTime = CMTime(seconds: AVAudioTime.seconds(forHostTime: time.hostTime), preferredTimescale: 44100)
+
+        guard let audioBuffer = createAudioSampleBuffer(from: buffer, presentationTime: presentationTime) else {
             return
         }
 
         await rtmpStream.append(audioBuffer)
     }
+    */
 
+    /*
     func createAudioSampleBuffer(from buffer: AVAudioPCMBuffer, presentationTime: CMTime) -> CMSampleBuffer? {
         // 將 Float32 數據轉換為 Int16
         let frameCount = Int(buffer.frameLength)
@@ -598,6 +612,7 @@ class ViewController: UIViewController {
         // 使用現有的方法創建 CMSampleBuffer
         return createAudioSampleBuffer(data: data, presentationTime: presentationTime)
     }
+    */
 
 
     // MARK: - 6. 底層轉換 (Boilerplate Code)
@@ -641,11 +656,12 @@ class ViewController: UIViewController {
         return sampleBuffer
     }
     
+    /*
     func createAudioSampleBuffer(data: Data, presentationTime: CMTime) -> CMSampleBuffer? {
-        
+
         let bytesPerFrame = 4 // Int16 * 2ch
         let numFrames = data.count / bytesPerFrame
-        
+
         var blockBuffer: CMBlockBuffer?
         let status = CMBlockBufferCreateWithMemoryBlock(
             allocator: kCFAllocatorDefault,
@@ -658,11 +674,11 @@ class ViewController: UIViewController {
             flags: 0,
             blockBufferOut: &blockBuffer
         )
-        
+
         guard status == kCMBlockBufferNoErr, let bb = blockBuffer else {
             return nil
         }
-        
+
         data.withUnsafeBytes {
             CMBlockBufferReplaceDataBytes(
                 with: $0.baseAddress!,
@@ -671,7 +687,7 @@ class ViewController: UIViewController {
                 dataLength: data.count
             )
         }
-        
+
         // ✅ ASBD（不要 ChannelLayout）
         var asbd = AudioStreamBasicDescription(
             mSampleRate: 44100,
@@ -684,7 +700,7 @@ class ViewController: UIViewController {
             mBitsPerChannel: 16,
             mReserved: 0
         )
-        
+
         var formatDesc: CMAudioFormatDescription?
         CMAudioFormatDescriptionCreate(
             allocator: kCFAllocatorDefault,
@@ -696,15 +712,15 @@ class ViewController: UIViewController {
             extensions: nil,
             formatDescriptionOut: &formatDesc
         )
-        
+
         guard let fmt = formatDesc else { return nil }
-        
+
         var timing = CMSampleTimingInfo(
             duration: CMTime(value: CMTimeValue(numFrames), timescale: 44100),
             presentationTimeStamp: presentationTime,
             decodeTimeStamp: .invalid
         )
-        
+
         var sampleBuffer: CMSampleBuffer?
         CMSampleBufferCreateReady(
             allocator: kCFAllocatorDefault,
@@ -717,9 +733,10 @@ class ViewController: UIViewController {
             sampleSizeArray: nil,
             sampleBufferOut: &sampleBuffer
         )
-        
+
         return sampleBuffer
     }
+    */
     
     // MARK: - Helper Methods
     private func showAlert(title: String, message: String) {
