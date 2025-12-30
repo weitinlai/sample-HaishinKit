@@ -48,6 +48,10 @@ class ViewController: UIViewController {
     
     // 用來精確記錄下一幀音訊應該從什麼時間開始
     private var audioPresentationTimeStamp: CMTime = .zero
+
+    // 直播音訊捕獲服務
+    private let audioSourceService = AudioSourceService()
+    private var audioCaptureTask: Task<Void, Never>?
     
     // UI
     @IBOutlet weak var statusLabel: UILabel!
@@ -64,7 +68,7 @@ class ViewController: UIViewController {
         loadImages()
         loadAudioFile() // 預先載入音訊數據
         setupLocalPreview()
-        // 移除 AudioEngineCapture 相關設定
+        setupAudioSession()
     }
     
     // MARK: - Setup UI
@@ -231,6 +235,10 @@ class ViewController: UIViewController {
         }
     }
 
+    private func setupAudioSession() {
+        audioSourceService.setUp(.audioEngine)
+    }
+
     // MARK: - 2. 開始直播邏輯
     @objc func startStreaming(_ sender: Any) {
         guard !isStreaming else { return }
@@ -289,10 +297,11 @@ class ViewController: UIViewController {
                     stopButton.alpha = 1.0
                 }
                 
-                // 4. 開始發送數據 (啟動虛擬引擎)
-                startVirtualDataFeeds()
+                // 4. 開始音訊捕獲
+                await audioSourceService.startRunning()
 
-                // 音訊會在 startVirtualDataFeeds 中啟動
+                // 5. 開始發送數據 (啟動虛擬引擎)
+                startVirtualDataFeeds()
                 
             } catch {
                 print("串流錯誤: \(error)")
@@ -306,10 +315,12 @@ class ViewController: UIViewController {
     }
     
     @objc func stopStreaming(_ sender: Any) {
+        Task {
+            await audioSourceService.stopRunning()
+        }
         stopVirtualDataFeeds()
         Task {
             do {
-                // 音訊會在 stopVirtualDataFeeds 中停止
 
                 try await rtmpStream.close()
                 try await rtmpConnection.close()
@@ -373,11 +384,11 @@ class ViewController: UIViewController {
             }
         }
         
-        // --- 音訊定時器 (更頻繁地檢查，確保不掉幀) ---
-        audioTimer = Timer.scheduledTimer(withTimeInterval: Double(audioFramesPerPacket) / audioSampleRate, // ≈ 0.023
-                                          repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            self.sendNextAudioChunk()
+        // --- 直播音訊捕獲 ---
+        audioCaptureTask = Task {
+            for await (buffer, time) in audioSourceService.buffer {
+                await sendLiveAudioBuffer(buffer, time: time)
+            }
         }
         
         // --- 圖片輪播 ---
@@ -484,10 +495,10 @@ class ViewController: UIViewController {
     
     private func stopVirtualDataFeeds() {
         videoTimer?.invalidate()
-        audioTimer?.invalidate()
+        audioCaptureTask?.cancel()
         imageRotationTimer?.invalidate()
         videoTimer = nil
-        audioTimer = nil
+        audioCaptureTask = nil
         imageRotationTimer = nil
 
         // 停止本機音訊播放
@@ -553,7 +564,42 @@ class ViewController: UIViewController {
         }
     }
 
-    
+    private func sendLiveAudioBuffer(_ buffer: AVAudioPCMBuffer, time: AVAudioTime) async {
+        // 將 AVAudioPCMBuffer 轉換為適合 RTMP 串流的格式
+        guard let audioBuffer = createAudioSampleBuffer(from: buffer, presentationTime: time.presentationTime) else {
+            return
+        }
+
+        await rtmpStream.append(audioBuffer)
+    }
+
+    func createAudioSampleBuffer(from buffer: AVAudioPCMBuffer, presentationTime: CMTime) -> CMSampleBuffer? {
+        // 將 Float32 數據轉換為 Int16
+        let frameCount = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+
+        // 準備 Int16 數據緩衝區
+        var int16Data = [Int16](repeating: 0, count: frameCount * channelCount)
+
+        if let floatData = buffer.floatChannelData {
+            for frame in 0..<frameCount {
+                for channel in 0..<channelCount {
+                    let floatSample = floatData[channel][frame]
+                    // 將 Float32 (-1.0...1.0) 轉換為 Int16 (-32768...32767)
+                    let int16Sample = Int16(max(-32768, min(32767, floatSample * 32767)))
+                    int16Data[frame * channelCount + channel] = int16Sample
+                }
+            }
+        }
+
+        // 將 Int16 數據轉換為 Data
+        let data = int16Data.withUnsafeBytes { Data($0) }
+
+        // 使用現有的方法創建 CMSampleBuffer
+        return createAudioSampleBuffer(data: data, presentationTime: presentationTime)
+    }
+
+
     // MARK: - 6. 底層轉換 (Boilerplate Code)
     
     // UIImage -> CVPixelBuffer

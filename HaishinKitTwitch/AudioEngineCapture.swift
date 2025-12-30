@@ -22,7 +22,7 @@ final class AudioEngineCapture {
         do {
             try startCapture()
         } catch {
-            //logger.warn(error)
+            logger.warn(error)
         }
     }
 
@@ -48,7 +48,7 @@ extension AudioEngineCapture: Runner {
             try startCapture()
             isRunning = true
         } catch {
-          //  logger.error(error)
+            logger.error(error)
         }
     }
 
