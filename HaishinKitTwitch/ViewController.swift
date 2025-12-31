@@ -491,9 +491,11 @@ class ViewController: UIViewController {
             async let micTask: Void = {
                 if audioMode == .microphoneOnly || audioMode == .both {
                     for await (buffer, time) in await audioSourceService.buffer {
-                        // 將麥克風音訊 buffer 送到 MediaMixer
-                        await mixer.append(buffer, when: time)
-                        print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
+                        // 將麥克風音訊 buffer 送到 MediaMixer 軌道 0
+                        if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
+                            await mixer.append(sampleBuffer, track: 0)
+                        }
+                        print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀 (軌道 0)")
                     }
                 }
             }()
@@ -501,9 +503,11 @@ class ViewController: UIViewController {
             async let wavTask: Void = {
                 if audioMode == .wavOnly || audioMode == .both {
                     for await (buffer, time) in await wavAudioSourceService.buffer {
-                        // 將 WAV 音訊 buffer 送到 MediaMixer
-                        await mixer.append(buffer, when: time)
-                        print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
+                        // 將 WAV 音訊 buffer 送到 MediaMixer 軌道 1
+                        if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
+                            await mixer.append(sampleBuffer, track: 1)
+                        }
+                        print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀 (軌道 1)")
                     }
                 }
             }()
@@ -858,7 +862,66 @@ class ViewController: UIViewController {
         return sampleBuffer
     }
     */
-    
+
+    // AVAudioPCMBuffer -> Audio CMSampleBuffer
+    func createAudioSampleBuffer(from buffer: AVAudioPCMBuffer, time: AVAudioTime) async -> CMSampleBuffer? {
+        guard let format = buffer.format as? AVAudioFormat else { return nil }
+
+        // 創建音訊格式描述
+        var audioFormatDesc: CMAudioFormatDescription?
+        let status = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: format.streamDescription,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &audioFormatDesc
+        )
+
+        guard status == noErr, let formatDesc = audioFormatDesc else { return nil }
+
+        // 創建音訊數據塊
+        let dataSize = Int(buffer.frameLength * buffer.format.streamDescription.pointee.mBytesPerFrame)
+        guard let blockBuffer = try? CMBlockBuffer(length: dataSize) else { return nil }
+
+        // 複製音訊數據
+        if let channelData = buffer.int16ChannelData {
+            let ptr = UnsafeRawPointer(channelData)
+            CMBlockBufferReplaceDataBytes(
+                with: ptr,
+                blockBuffer: blockBuffer,
+                offsetIntoDestination: 0,
+                dataLength: dataSize
+            )
+        }
+
+        // 創建時間戳
+        let sampleTime = CMTime(value: CMTimeValue(time.sampleTime), timescale: CMTimeScale(format.sampleRate))
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: CMTimeValue(buffer.frameLength), timescale: CMTimeScale(format.sampleRate)),
+            presentationTimeStamp: sampleTime,
+            decodeTimeStamp: .invalid
+        )
+
+        // 創建樣本緩衝區
+        var sampleBuffer: CMSampleBuffer?
+        CMSampleBufferCreateReady(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: blockBuffer,
+            formatDescription: formatDesc,
+            sampleCount: CMItemCount(buffer.frameLength),
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &sampleBuffer
+        )
+
+        return sampleBuffer
+    }
+
     // MARK: - Helper Methods
     private func showAlert(title: String, message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
