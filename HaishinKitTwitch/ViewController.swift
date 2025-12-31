@@ -242,7 +242,9 @@ class ViewController: UIViewController {
     }
 
     private func setupAudioSession() {
-        audioSourceService.setUp(.audioEngine)
+        Task {
+            await audioSourceService.setUp(.audioEngine)
+        }
     }
 
     private func setupWavAudioService() {
