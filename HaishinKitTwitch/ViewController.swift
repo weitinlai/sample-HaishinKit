@@ -888,7 +888,10 @@ class ViewController: UIViewController {
 
     // AVAudioPCMBuffer -> Audio CMSampleBuffer
     func createAudioSampleBuffer(from buffer: AVAudioPCMBuffer, time: AVAudioTime) async -> CMSampleBuffer? {
-        guard let format = buffer.format as? AVAudioFormat else { return nil }
+        // 首先確保buffer是我們期望的格式 (16-bit, 44100Hz, 立體聲)
+        let normalizedBuffer = await normalizeAudioBuffer(buffer)
+
+        guard let format = normalizedBuffer.format as? AVAudioFormat else { return nil }
 
         // 創建音訊格式描述
         var audioFormatDesc: CMAudioFormatDescription?
@@ -906,11 +909,11 @@ class ViewController: UIViewController {
         guard status == noErr, let formatDesc = audioFormatDesc else { return nil }
 
         // 創建音訊數據塊
-        let dataSize = Int(buffer.frameLength * buffer.format.streamDescription.pointee.mBytesPerFrame)
+        let dataSize = Int(normalizedBuffer.frameLength * normalizedBuffer.format.streamDescription.pointee.mBytesPerFrame)
         guard let blockBuffer = try? CMBlockBuffer(length: dataSize) else { return nil }
 
-        // 複製音訊數據
-        if let channelData = buffer.int16ChannelData {
+        // 複製音訊數據 - 現在我們知道是16-bit格式
+        if let channelData = normalizedBuffer.int16ChannelData {
             let ptr = UnsafeRawPointer(channelData)
             CMBlockBufferReplaceDataBytes(
                 with: ptr,
@@ -920,10 +923,10 @@ class ViewController: UIViewController {
             )
         }
 
-        // 創建時間戳
-        let sampleTime = CMTime(value: CMTimeValue(time.sampleTime), timescale: CMTimeScale(format.sampleRate))
+        // 創建時間戳 - 使用標準採樣率
+        let sampleTime = CMTime(value: CMTimeValue(time.sampleTime), timescale: 44100)
         var timing = CMSampleTimingInfo(
-            duration: CMTime(value: CMTimeValue(buffer.frameLength), timescale: CMTimeScale(format.sampleRate)),
+            duration: CMTime(value: CMTimeValue(normalizedBuffer.frameLength), timescale: 44100),
             presentationTimeStamp: sampleTime,
             decodeTimeStamp: .invalid
         )
@@ -934,7 +937,7 @@ class ViewController: UIViewController {
             allocator: kCFAllocatorDefault,
             dataBuffer: blockBuffer,
             formatDescription: formatDesc,
-            sampleCount: CMItemCount(buffer.frameLength),
+            sampleCount: CMItemCount(normalizedBuffer.frameLength),
             sampleTimingEntryCount: 1,
             sampleTimingArray: &timing,
             sampleSizeEntryCount: 0,
@@ -945,6 +948,40 @@ class ViewController: UIViewController {
         return sampleBuffer
     }
 
+    private func normalizeAudioBuffer(_ buffer: AVAudioPCMBuffer) async -> AVAudioPCMBuffer {
+        // 目標格式：16-bit, 44100Hz, 立體聲
+        guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
+                                             sampleRate: 44100,
+                                             channels: 2,
+                                             interleaved: true) else {
+            return buffer
+        }
+
+        // 如果已經是正確格式，直接返回
+        if buffer.format.isEqual(targetFormat) {
+            return buffer
+        }
+
+        // 創建轉換器
+        guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
+            return buffer
+        }
+
+        // 創建輸出buffer
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat,
+                                                frameCapacity: buffer.frameLength) else {
+            return buffer
+        }
+
+        // 執行轉換
+        do {
+            try converter.convert(to: outputBuffer, from: buffer)
+            return outputBuffer
+        } catch {
+            print("❌ 音訊格式標準化失敗: \(error)")
+            return buffer
+        }
+    }
 
     // MARK: - Helper Methods
     private func showAlert(title: String, message: String) {
