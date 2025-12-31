@@ -12,6 +12,13 @@ import RTMPHaishinKit
 import VideoToolbox
 import CoreVideo
 
+// MARK: - Audio Mode Enum
+enum AudioMode {
+    case microphoneOnly    // 只有麥克風
+    case wavOnly          // 只有WAV
+    case both             // 麥克風 + WAV
+}
+
 class ViewController: UIViewController {
     
     // MARK: - Streaming Objects
@@ -26,6 +33,9 @@ class ViewController: UIViewController {
     private var isStreaming = false
     private var videoTimer: Timer?
     private var audioTimer: Timer?
+
+    // 音訊模式控制
+    private var currentAudioMode: AudioMode = .both
     
     // 圖片資源
     private var images: [UIImage] = []
@@ -64,6 +74,9 @@ class ViewController: UIViewController {
     @IBOutlet weak var stopButton: UIButton!
     @IBOutlet weak var previewView: UIView!
     private var previewLayer: CALayer? // 用來顯示當前發送的圖片
+
+    // 音訊控制UI
+    private var audioModeControl: UISegmentedControl!
     
     // MARK: - Lifecycle
     override func viewDidLoad() {
@@ -87,7 +100,15 @@ class ViewController: UIViewController {
         preview.backgroundColor = .black
         view.addSubview(preview)
         previewView = preview
-        
+
+        // === 新增：音訊模式控制 ===
+        let audioControl = UISegmentedControl(items: ["🎙️ 麥克風", "🎵 WAV", "🎙️+🎵 雙聲道"])
+        audioControl.translatesAutoresizingMaskIntoConstraints = false
+        audioControl.selectedSegmentIndex = 2  // 預設選擇雙聲道
+        audioControl.addTarget(self, action: #selector(audioModeChanged(_:)), for: .valueChanged)
+        view.addSubview(audioControl)
+        audioModeControl = audioControl
+
         // 建立開始按鈕
         let startBtn = UIButton(type: .system)
         startBtn.translatesAutoresizingMaskIntoConstraints = false
@@ -127,20 +148,27 @@ class ViewController: UIViewController {
             previewView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
             previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             previewView.heightAnchor.constraint(equalTo: previewView.widthAnchor, multiplier: 9.0/16.0),
-            
-            startButton.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 30),
+
+            // 音訊控制器的約束
+            audioModeControl.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 20),
+            audioModeControl.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+            audioModeControl.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            audioModeControl.heightAnchor.constraint(equalToConstant: 40),
+
+            startButton.topAnchor.constraint(equalTo: audioModeControl.bottomAnchor, constant: 20),
             startButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
             startButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
             startButton.heightAnchor.constraint(equalToConstant: 50),
-            
-            stopButton.topAnchor.constraint(equalTo: startButton.bottomAnchor, constant: 20),
+
+            stopButton.topAnchor.constraint(equalTo: startButton.bottomAnchor, constant: 15),
             stopButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
             stopButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
             stopButton.heightAnchor.constraint(equalToConstant: 50),
-            
-            statusLabel.topAnchor.constraint(equalTo: stopButton.bottomAnchor, constant: 30),
+
+            statusLabel.topAnchor.constraint(equalTo: stopButton.bottomAnchor, constant: 20),
             statusLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20)
+            statusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+            statusLabel.bottomAnchor.constraint(lessThanOrEqualTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20)
         ])
     }
     
@@ -251,6 +279,29 @@ class ViewController: UIViewController {
         wavAudioSourceService = WAVAudioSourceService(audioData: audioData, sampleRate: audioSampleRate, channels: audioChannels)
     }
 
+    // MARK: - Audio Mode Control
+    @objc private func audioModeChanged(_ sender: UISegmentedControl) {
+        switch sender.selectedSegmentIndex {
+        case 0:
+            currentAudioMode = .microphoneOnly
+            print("🔄 切換到：只有麥克風模式")
+        case 1:
+            currentAudioMode = .wavOnly
+            print("🔄 切換到：只有WAV模式")
+        case 2:
+            currentAudioMode = .both
+            print("🔄 切換到：雙聲道模式")
+        default:
+            break
+        }
+
+        // 如果正在直播，顯示提示
+        if isStreaming {
+            let modeText = sender.titleForSegment(at: sender.selectedSegmentIndex) ?? ""
+            statusLabel.text = "音訊模式已切換為：\(modeText)\n請重新開始直播以應用更改"
+        }
+    }
+
     // MARK: - 2. 開始直播邏輯
     @objc func startStreaming(_ sender: Any) {
         guard !isStreaming else { return }
@@ -265,10 +316,21 @@ class ViewController: UIViewController {
             return
         }
         
+        // 顯示當前選擇的音訊模式
+        let modeText: String
+        switch currentAudioMode {
+        case .microphoneOnly:
+            modeText = "🎙️ 只有麥克風"
+        case .wavOnly:
+            modeText = "🎵 只有WAV"
+        case .both:
+            modeText = "🎙️+🎵 雙聲道"
+        }
+
         Task {
             do {
                 await MainActor.run {
-                    statusLabel.text = "連接中..."
+                    statusLabel.text = "啟動直播...\n音訊模式: \(modeText)"
                     startButton.isEnabled = false
                     startButton.alpha = 0.5
                 }
@@ -342,9 +404,16 @@ class ViewController: UIViewController {
     }
     
     @objc func stopStreaming(_ sender: Any) {
+        let audioMode = currentAudioMode  // 捕獲主 actor 隔離的屬性
         Task {
+            // 總是停止麥克風服務（以防萬一）
             await audioSourceService.stopRunning()
-            await wavAudioSourceService.stopRunning()
+
+            // 根據模式停止對應服務
+            if audioMode == .wavOnly || audioMode == .both {
+                await wavAudioSourceService.stopRunning()
+            }
+
             try await mixer.stopRunning()
         }
         stopVirtualDataFeeds()
@@ -416,30 +485,37 @@ class ViewController: UIViewController {
         }
         
         // --- 統一音訊處理 ---
-        // 同時處理麥克風和 WAV 文件，使用同一個 Task 確保同步
+        // 根據選擇的模式處理音訊
+        let audioMode = currentAudioMode  // 捕獲主 actor 隔離的屬性
         audioCaptureTask = Task {
             async let micTask: Void = {
-                for await (buffer, time) in await audioSourceService.buffer {
-                    // 將麥克風音訊 buffer 送到 MediaMixer
-                    await mixer.append(buffer, when: time)
-                    print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
+                if audioMode == .microphoneOnly || audioMode == .both {
+                    for await (buffer, time) in await audioSourceService.buffer {
+                        // 將麥克風音訊 buffer 送到 MediaMixer
+                        await mixer.append(buffer, when: time)
+                        print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
+                    }
                 }
             }()
 
             async let wavTask: Void = {
-                for await (buffer, time) in await wavAudioSourceService.buffer {
-                    // 將 WAV 音訊 buffer 送到 MediaMixer
-                    await mixer.append(buffer, when: time)
-                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
+                if audioMode == .wavOnly || audioMode == .both {
+                    for await (buffer, time) in await wavAudioSourceService.buffer {
+                        // 將 WAV 音訊 buffer 送到 MediaMixer
+                        await mixer.append(buffer, when: time)
+                        print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
+                    }
                 }
             }()
 
-            // 同時運行兩個音訊來源，確保同步處理
+            // 同時運行選定的音訊來源
             _ = await (micTask, wavTask)
         }
 
-        // 啟動 WAV 音訊服務
-        await wavAudioSourceService.startRunning()
+        // 根據模式啟動對應的服務
+        if audioMode == .wavOnly || audioMode == .both {
+            await wavAudioSourceService.startRunning()
+        }
         
         // --- 圖片輪播 ---
         imageRotationTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
