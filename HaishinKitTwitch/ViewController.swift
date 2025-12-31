@@ -211,10 +211,10 @@ class ViewController: UIViewController {
             }
             try file.read(into: sourceBuffer)
 
-            // 3. 定義目標格式 (16-bit, 48000Hz, 立體聲) - 匹配系統默認採樣率
+            // 3. 定義目標格式 (16-bit, 48000Hz, 單聲道) - 簡化格式匹配
             guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                                   sampleRate: 48000,
-                                                  channels: 2,
+                                                  channels: 1, // 單聲道輸出
                                                   interleaved: true) else { return }
             
             // 4. 建立轉換器
@@ -253,8 +253,8 @@ class ViewController: UIViewController {
                 self.audioChannels = targetFormat.channelCount
                 self.audioFileFormat = targetFormat
                 
-                print("✅ 音訊載入並標準化完成")
-                print("   最終格式: \(targetFormat.sampleRate)Hz, \(targetFormat.channelCount)ch (Stereo), Int16")
+            print("✅ 音訊載入並標準化完成")
+                       print("   最終格式: \(targetFormat.sampleRate)Hz, \(targetFormat.channelCount)ch (Mono), Int16")
                 print("   數據大小: \(self.audioData.count) bytes")
             }
             
@@ -391,10 +391,7 @@ class ViewController: UIViewController {
                     stopButton.alpha = 1.0
                 }
                 
-                // 4. 開始音訊捕獲
-                await audioSourceService.startRunning()
-
-                // 5. 開始發送數據 (啟動虛擬引擎)
+                // 4. 開始發送數據 (啟動虛擬引擎，包含音訊)
                 await startVirtualDataFeeds()
                 
             } catch {
@@ -493,28 +490,27 @@ class ViewController: UIViewController {
         // 根據選擇的模式處理音訊
         let audioMode = currentAudioMode  // 捕獲主 actor 隔離的屬性
         audioCaptureTask = Task {
-            async let micTask: Void = {
-                if audioMode == .microphoneOnly || audioMode == .both {
-                    for await (buffer, time) in await audioSourceService.buffer {
-                        // 將麥克風音訊 buffer 送到 MediaMixer
-                        await mixer.append(buffer, when: time)
-                        print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
-                    }
+            switch audioMode {
+            case .microphoneOnly:
+                // 只處理麥克風
+                await self.audioSourceService.startRunning()
+                for await (buffer, time) in await self.audioSourceService.buffer {
+                    await self.mixer.append(buffer, when: time)
+                    print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
                 }
-            }()
 
-            async let wavTask: Void = {
-                if audioMode == .wavOnly || audioMode == .both {
-                    for await (buffer, time) in await wavAudioSourceService.buffer {
-                        // 將 WAV 音訊 buffer 送到 MediaMixer
-                        await mixer.append(buffer, when: time)
-                        print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
-                    }
+            case .wavOnly:
+                // 只處理WAV
+                await self.wavAudioSourceService.startRunning()
+                for await (buffer, time) in await self.wavAudioSourceService.buffer {
+                    await self.mixer.append(buffer, when: time)
+                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
                 }
-            }()
 
-            // 同時運行選定的音訊來源
-            _ = await (micTask, wavTask)
+            case .both:
+                // 雙聲道模式：混合兩個來源
+                await self.mixAudioStreams()
+            }
         }
 
         // 根據模式啟動對應的服務
@@ -866,8 +862,8 @@ class ViewController: UIViewController {
 
     // AVAudioPCMBuffer -> Audio CMSampleBuffer
     func createAudioSampleBuffer(from buffer: AVAudioPCMBuffer, time: AVAudioTime) async -> CMSampleBuffer? {
-        // 首先確保buffer是我們期望的格式 (16-bit, 44100Hz, 立體聲)
-        let normalizedBuffer = await normalizeAudioBuffer(buffer)
+        // 直接使用buffer，不進行標準化
+        let normalizedBuffer = buffer
 
         guard let format = normalizedBuffer.format as? AVAudioFormat else { return nil }
 
@@ -926,41 +922,35 @@ class ViewController: UIViewController {
         return sampleBuffer
     }
 
-    private func normalizeAudioBuffer(_ buffer: AVAudioPCMBuffer) async -> AVAudioPCMBuffer {
-        // 動態目標格式：16-bit, 匹配當前buffer的採樣率, 立體聲
-        // 這樣可以避免採樣率轉換，只統一格式和聲道
-        guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                                             sampleRate: buffer.format.sampleRate, // 保持原始採樣率
-                                             channels: 2, // 統一為立體聲
-                                             interleaved: true) else {
-            return buffer
-        }
 
-        // 如果已經是正確格式，直接返回
-        if buffer.format.isEqual(targetFormat) {
-            return buffer
-        }
+    private func mixAudioStreams() async {
+        // 雙聲道模式：同時啟動麥克風和WAV來源，HaishinKit會處理混合
 
-        // 創建轉換器
-        guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
-            return buffer
-        }
+        // 同時啟動兩個音訊來源
+        await audioSourceService.startRunning()
+        await wavAudioSourceService.startRunning()
 
-        // 創建輸出buffer
-        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat,
-                                                frameCapacity: buffer.frameLength) else {
-            return buffer
-        }
+        await withTaskGroup(of: Void.self) { group in
+            // 麥克風處理任務
+            group.addTask {
+                for await (buffer, time) in await self.audioSourceService.buffer {
+                    // 直接發送原始buffer，讓HaishinKit處理格式轉換
+                    await self.mixer.append(buffer, when: time)
+                    print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
+                }
+            }
 
-        // 執行轉換
-        do {
-            try converter.convert(to: outputBuffer, from: buffer)
-            return outputBuffer
-        } catch {
-            print("❌ 音訊格式標準化失敗: \(error)")
-            return buffer
+            // WAV處理任務
+            group.addTask {
+                for await (buffer, time) in await self.wavAudioSourceService.buffer {
+                    // WAV 已經是正確格式，直接發送
+                    await self.mixer.append(buffer, when: time)
+                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
+                }
+            }
         }
     }
+
 
     // MARK: - Helper Methods
     private func showAlert(title: String, message: String) {
@@ -1027,22 +1017,25 @@ actor WAVAudioSourceService {
 
         guard !audioData.isEmpty else { return }
 
-        var chunk: Data
-        if audioOffset + chunkSize > audioData.count {
-            // 循環播放
-            let remaining = audioData.count - audioOffset
-            chunk = audioData.subdata(in: audioOffset..<audioData.count)
-            let needed = chunkSize - remaining
-            if needed > 0 {
-                chunk.append(audioData.prefix(needed))
-            }
-            audioOffset = needed
-        } else {
-            chunk = audioData.subdata(in: audioOffset..<(audioOffset + chunkSize))
-            audioOffset += chunkSize
+        // 簡單循環：如果超過數據長度，從頭開始
+        if audioOffset >= audioData.count {
+            audioOffset = 0
+            print("🔄 WAV 循環播放：從頭開始")
         }
 
-        guard chunk.count >= chunkSize else { return }
+        // 確保我們有足夠的數據
+        let availableData = min(chunkSize, audioData.count - audioOffset)
+        var chunk = audioData.subdata(in: audioOffset..<(audioOffset + availableData))
+
+        // 如果數據不夠，補充從頭開始的數據
+        if chunk.count < chunkSize {
+            let needed = chunkSize - chunk.count
+            chunk.append(audioData.prefix(needed))
+        }
+
+        audioOffset = (audioOffset + availableData) % audioData.count
+
+        guard chunk.count == chunkSize else { return }
 
         // 創建 AVAudioPCMBuffer，使用 16-bit 整數格式匹配我們的數據
         guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
@@ -1065,11 +1058,11 @@ actor WAVAudioSourceService {
             memcpy(destPtr, sourcePtr, chunk.count)
         }
 
-        // 使用樣本時間作為時間戳，與 AudioSourceService 保持一致
+        // 使用樣本時間創建 AVAudioTime，這對於音訊同步很重要
         let sampleTime = AVAudioFramePosition(audioOffset / bytesPerFrame)
-        // 使用主機時間創建 AVAudioTime
-        let audioTime = AVAudioTime(hostTime: mach_absolute_time())
+        let audioTime = AVAudioTime(sampleTime: sampleTime, atRate: sampleRate)
 
         bufferContinuation?.yield((buffer, audioTime))
+        print("🎵 WAV chunk 發送: offset=\(audioOffset), size=\(chunk.count), pts=\(audioTime.sampleTime ?? 0)")
     }
 }
