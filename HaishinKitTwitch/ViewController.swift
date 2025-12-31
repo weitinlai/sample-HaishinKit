@@ -865,11 +865,11 @@ actor WAVAudioSourceService {
 
         guard chunk.count >= chunkSize else { return }
 
-        // 創建 AVAudioPCMBuffer
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+        // 創建 AVAudioPCMBuffer，使用 16-bit 整數格式匹配我們的數據
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatInt16,
                                        sampleRate: sampleRate,
                                        channels: channels,
-                                       interleaved: false),
+                                       interleaved: true),
               let buffer = AVAudioPCMBuffer(pcmFormat: format,
                                           frameCapacity: AVAudioFrameCount(framesPerPacket)) else {
             return
@@ -877,27 +877,19 @@ actor WAVAudioSourceService {
 
         buffer.frameLength = AVAudioFrameCount(framesPerPacket)
 
-        // 將 Int16 數據轉換為 Float32
-        if let floatChannelData = buffer.floatChannelData {
-            chunk.withUnsafeBytes { ptr in
-                guard let int16Ptr = ptr.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
+        // 直接複製 Int16 數據到 buffer
+        chunk.withUnsafeBytes { ptr in
+            guard let sourcePtr = ptr.baseAddress?.assumingMemoryBound(to: Int16.self),
+                  let destPtr = buffer.int16ChannelData?[0] else { return }
 
-                for frame in 0..<framesPerPacket {
-                    for ch in 0..<Int(channels) {
-                        let sampleIndex = frame * Int(channels) + ch
-                        let int16Sample = int16Ptr[sampleIndex]
-                        floatChannelData[ch][frame] = Float(int16Sample) / 32768.0
-                    }
-                }
-            }
+            // 對於交織格式，直接複製整個塊
+            memcpy(destPtr, sourcePtr, chunk.count)
         }
 
-        // 使用當前主機時間作為時間戳，確保與其他音訊來源同步
-        let hostTime = mach_absolute_time()
-        var timebaseInfo = mach_timebase_info_data_t()
-        mach_timebase_info(&timebaseInfo)
-        let nanoseconds = hostTime * UInt64(timebaseInfo.numer) / UInt64(timebaseInfo.denom)
-        let audioTime = AVAudioTime(hostTime: hostTime)
+        // 使用樣本時間作為時間戳，與 AudioSourceService 保持一致
+        let sampleTime = AVAudioFramePosition(audioOffset / bytesPerFrame)
+        // 使用主機時間創建 AVAudioTime
+        let audioTime = AVAudioTime(hostTime: mach_absolute_time())
 
         bufferContinuation?.yield((buffer, audioTime))
     }
