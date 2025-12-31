@@ -55,6 +55,8 @@ class ViewController: UIViewController {
     
     // 在 ViewController 類別中添加
     private var mixer = MediaMixer()
+    private var wavAudioSourceService: WAVAudioSourceService!
+    private var wavAudioTask: Task<Void, Never>?
 
     // UI
     @IBOutlet weak var statusLabel: UILabel!
@@ -72,6 +74,7 @@ class ViewController: UIViewController {
         loadAudioFile() // 預先載入音訊數據
         setupLocalPreview()
         setupAudioSession()
+        setupWavAudioService()
     }
     
     // MARK: - Setup UI
@@ -242,6 +245,10 @@ class ViewController: UIViewController {
         audioSourceService.setUp(.audioEngine)
     }
 
+    private func setupWavAudioService() {
+        wavAudioSourceService = WAVAudioSourceService(audioData: audioData, sampleRate: audioSampleRate, channels: audioChannels)
+    }
+
     // MARK: - 2. 開始直播邏輯
     @objc func startStreaming(_ sender: Any) {
         guard !isStreaming else { return }
@@ -278,6 +285,15 @@ class ViewController: UIViewController {
                 // 在 try await rtmpStream.setVideoSettings(videoSettings) 之後添加
                 try await mixer.addOutput(rtmpStream)  // 將 mixer 連接到 RTMP 串流
                 try await mixer.startRunning()
+
+                // 配置多軌道音訊混合
+                var audioMixerSettings = await mixer.audioMixerSettings
+                // 軌道 0: 麥克風 (通過 AudioEngineCapture)
+                audioMixerSettings.tracks[0] = .default
+                // 軌道 1: WAV 檔案播放
+                audioMixerSettings.tracks[1] = .default
+                audioMixerSettings.tracks[1]?.volume = 0.7 // WAV 音量設為 70%
+                await mixer.setAudioMixerSettings(audioMixerSettings)
 
                 // 2. 連接（URL 不包含 stream key）
                 print("正在連線到: \(twitchRTMPURL)")
@@ -324,6 +340,7 @@ class ViewController: UIViewController {
     @objc func stopStreaming(_ sender: Any) {
         Task {
             await audioSourceService.stopRunning()
+            await wavAudioSourceService.stopRunning()
             try await mixer.stopRunning()
         }
         stopVirtualDataFeeds()
@@ -394,13 +411,28 @@ class ViewController: UIViewController {
             }
         }
         
-        // --- 直播音訊捕獲 ---
+        // --- 雙音訊來源直播 ---
+        // 同時運行麥克風捕獲和 WAV 檔案播放
         audioCaptureTask = Task {
-            for await (buffer, time) in await audioSourceService.buffer {
-                // 將音訊 buffer 送到 MediaMixer
-                await mixer.append(buffer, when: time)
-            }
+            async let micTask: Void = {
+                // 麥克風音訊 - 通過 AudioEngineCapture 自動處理
+                print("🎙️ 麥克風音訊已啟動")
+            }()
+
+            async let wavTask: Void = {
+                // WAV 檔案播放 - 手動將數據送到 MediaMixer
+                for await (buffer, time) in await wavAudioSourceService.buffer {
+                    await mixer.append(buffer, when: time)
+                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
+                }
+            }()
+
+            // 同時運行兩個音訊來源
+            _ = await (micTask, wavTask)
         }
+
+        // 啟動 WAV 音訊服務
+        await wavAudioSourceService.startRunning()
         
         // --- 圖片輪播 ---
         imageRotationTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
@@ -752,4 +784,108 @@ class ViewController: UIViewController {
     }
 }
 
-// 移除 WAVAudioSourceService，回到簡單的 Timer 方法
+// WAVAudioSourceService - 用於播放 WAV 檔案的音訊來源服務
+actor WAVAudioSourceService {
+    var buffer: AsyncStream<(AVAudioPCMBuffer, AVAudioTime)> {
+        AsyncStream { continuation in
+            bufferContinuation = continuation
+        }
+    }
+
+    private var audioData: Data
+    private var sampleRate: Double
+    private var channels: UInt32
+    private var audioOffset: Int = 0
+    private var bufferContinuation: AsyncStream<(AVAudioPCMBuffer, AVAudioTime)>.Continuation?
+    private var tasks: [Task<Void, Swift.Error>] = []
+    private var isRunning = false
+
+    init(audioData: Data, sampleRate: Double, channels: UInt32) {
+        self.audioData = audioData
+        self.sampleRate = sampleRate
+        self.channels = channels
+    }
+
+    func startRunning() async {
+        guard !isRunning && !audioData.isEmpty else { return }
+
+        isRunning = true
+        audioOffset = 0 // 重置播放位置
+
+        tasks.append(Task {
+            let interval = UInt64(1024.0 / sampleRate * 1_000_000_000) // 納秒
+
+            while !Task.isCancelled && self.isRunning {
+                await self.sendNextChunk()
+                try await Task.sleep(nanoseconds: interval)
+            }
+        })
+    }
+
+    func stopRunning() async {
+        isRunning = false
+        for task in tasks {
+            task.cancel()
+        }
+        tasks.removeAll()
+        audioOffset = 0
+    }
+
+    private func sendNextChunk() async {
+        let framesPerPacket = 1024
+        let bytesPerSample: Int = 2 // Int16
+        let bytesPerFrame = bytesPerSample * Int(channels)
+        let chunkSize = framesPerPacket * bytesPerFrame
+
+        guard !audioData.isEmpty else { return }
+
+        var chunk: Data
+        if audioOffset + chunkSize > audioData.count {
+            // 循環播放
+            let remaining = audioData.count - audioOffset
+            chunk = audioData.subdata(in: audioOffset..<audioData.count)
+            let needed = chunkSize - remaining
+            if needed > 0 {
+                chunk.append(audioData.prefix(needed))
+            }
+            audioOffset = needed
+        } else {
+            chunk = audioData.subdata(in: audioOffset..<(audioOffset + chunkSize))
+            audioOffset += chunkSize
+        }
+
+        guard chunk.count >= chunkSize else { return }
+
+        // 創建 AVAudioPCMBuffer
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                       sampleRate: sampleRate,
+                                       channels: channels,
+                                       interleaved: false),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format,
+                                          frameCapacity: AVAudioFrameCount(framesPerPacket)) else {
+            return
+        }
+
+        buffer.frameLength = AVAudioFrameCount(framesPerPacket)
+
+        // 將 Int16 數據轉換為 Float32
+        if let floatChannelData = buffer.floatChannelData {
+            chunk.withUnsafeBytes { ptr in
+                guard let int16Ptr = ptr.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
+
+                for frame in 0..<framesPerPacket {
+                    for ch in 0..<Int(channels) {
+                        let sampleIndex = frame * Int(channels) + ch
+                        let int16Sample = int16Ptr[sampleIndex]
+                        floatChannelData[ch][frame] = Float(int16Sample) / 32768.0
+                    }
+                }
+            }
+        }
+
+        let audioTime = AVAudioTime(sampleTime: AVAudioFramePosition(audioOffset / bytesPerFrame),
+                                   atRate: sampleRate)
+
+        bufferContinuation?.yield((buffer, audioTime))
+    }
+}
