@@ -415,24 +415,27 @@ class ViewController: UIViewController {
             }
         }
         
-        // --- 麥克風音訊處理 ---
-        // 處理來自 AudioSourceService 的麥克風 buffer
-        Task {
-            for await (buffer, time) in await audioSourceService.buffer {
-                // 將音訊 buffer 送到 MediaMixer（軌道 0）
-                await mixer.append(buffer, when: time)
-                print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
-            }
-        }
-
-        // --- WAV 檔案播放 ---
-        // 處理 WAV 檔案音訊
+        // --- 統一音訊處理 ---
+        // 同時處理麥克風和 WAV 文件，使用同一個 Task 確保同步
         audioCaptureTask = Task {
-            for await (buffer, time) in await wavAudioSourceService.buffer {
-                // 將音訊 buffer 送到 MediaMixer（軌道 1）
-                await mixer.append(buffer, when: time)
-                print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
-            }
+            async let micTask: Void = {
+                for await (buffer, time) in await audioSourceService.buffer {
+                    // 將麥克風音訊 buffer 送到 MediaMixer
+                    await mixer.append(buffer, when: time)
+                    print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
+                }
+            }()
+
+            async let wavTask: Void = {
+                for await (buffer, time) in await wavAudioSourceService.buffer {
+                    // 將 WAV 音訊 buffer 送到 MediaMixer
+                    await mixer.append(buffer, when: time)
+                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
+                }
+            }()
+
+            // 同時運行兩個音訊來源，確保同步處理
+            _ = await (micTask, wavTask)
         }
 
         // 啟動 WAV 音訊服務
@@ -817,10 +820,12 @@ actor WAVAudioSourceService {
         audioOffset = 0 // 重置播放位置
 
         tasks.append(Task {
-            let interval = UInt64(1024.0 / sampleRate * 1_000_000_000) // 納秒
+            let framesPerBuffer = 1024.0
+            let interval = UInt64(framesPerBuffer / sampleRate * 1_000_000_000) // 納秒
 
             while !Task.isCancelled && self.isRunning {
                 await self.sendNextChunk()
+                // 使用更精確的時間間隔來避免音訊不同步
                 try await Task.sleep(nanoseconds: interval)
             }
         })
@@ -887,8 +892,12 @@ actor WAVAudioSourceService {
             }
         }
 
-        let audioTime = AVAudioTime(sampleTime: AVAudioFramePosition(audioOffset / bytesPerFrame),
-                                   atRate: sampleRate)
+        // 使用當前主機時間作為時間戳，確保與其他音訊來源同步
+        let hostTime = mach_absolute_time()
+        var timebaseInfo = mach_timebase_info_data_t()
+        mach_timebase_info(&timebaseInfo)
+        let nanoseconds = hostTime * UInt64(timebaseInfo.numer) / UInt64(timebaseInfo.denom)
+        let audioTime = AVAudioTime(hostTime: hostTime)
 
         bufferContinuation?.yield((buffer, audioTime))
     }
