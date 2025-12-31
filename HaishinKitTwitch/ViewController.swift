@@ -288,10 +288,15 @@ class ViewController: UIViewController {
                 try await mixer.addOutput(rtmpStream)  // 將 mixer 連接到 RTMP 串流
                 try await mixer.startRunning()
 
-                // 配置音訊混合 - 兩個來源都會自動混合
+                // 配置音訊混合 - 兩個獨立軌道
                 var audioMixerSettings = await mixer.audioMixerSettings
-                // 預設設置，兩個音訊來源會自動平衡
-                audioMixerSettings.mainTrack = 0  // 主要軌道
+                // 軌道 0: 麥克風音訊
+                audioMixerSettings.tracks[0] = .default
+                // 軌道 1: WAV 檔案播放，降低音量避免過大
+                audioMixerSettings.tracks[1] = .default
+                audioMixerSettings.tracks[1]?.volume = 0.7  // WAV 音量 70%
+                // 主軌道設為 0（麥克風）
+                audioMixerSettings.mainTrack = 0
                 await mixer.setAudioMixerSettings(audioMixerSettings)
 
                 // 2. 連接（URL 不包含 stream key）
@@ -411,10 +416,10 @@ class ViewController: UIViewController {
         }
         
         // --- 麥克風音訊處理 ---
-        // 處理來自 AudioSourceService 的麥克風 buffer（來自 90202ad 的實現）
+        // 處理來自 AudioSourceService 的麥克風 buffer
         Task {
             for await (buffer, time) in await audioSourceService.buffer {
-                // 將音訊 buffer 送到 MediaMixer
+                // 將音訊 buffer 送到 MediaMixer（軌道 0）
                 await mixer.append(buffer, when: time)
                 print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
             }
@@ -424,6 +429,7 @@ class ViewController: UIViewController {
         // 處理 WAV 檔案音訊
         audioCaptureTask = Task {
             for await (buffer, time) in await wavAudioSourceService.buffer {
+                // 將音訊 buffer 送到 MediaMixer（軌道 1）
                 await mixer.append(buffer, when: time)
                 print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
             }
