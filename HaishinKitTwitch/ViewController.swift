@@ -411,11 +411,12 @@ class ViewController: UIViewController {
         }
         
         // --- 麥克風音訊處理 ---
-        // 處理來自 AudioSourceService 的麥克風 buffer
+        // 處理來自 AudioSourceService 的麥克風 buffer（來自 90202ad 的實現）
         Task {
-            for await buffer in await audioSourceService.buffer {
-                await mixer.append(buffer.0, when: buffer.1)
-                print("🎙️ 麥克風音訊 buffer: \(buffer.0.frameLength) 幀")
+            for await (buffer, time) in await audioSourceService.buffer {
+                // 將音訊 buffer 送到 MediaMixer
+                await mixer.append(buffer, when: time)
+                print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
             }
         }
 
