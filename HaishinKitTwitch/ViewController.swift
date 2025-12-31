@@ -324,7 +324,7 @@ class ViewController: UIViewController {
                 await audioSourceService.startRunning()
 
                 // 5. 開始發送數據 (啟動虛擬引擎)
-                startVirtualDataFeeds()
+                await startVirtualDataFeeds()
                 
             } catch {
                 print("串流錯誤: \(error)")
@@ -387,7 +387,7 @@ class ViewController: UIViewController {
     */
 
     // 啟動虛擬數據流 (追趕式策略)
-    private func startVirtualDataFeeds() {
+    private func startVirtualDataFeeds() async {
         // AudioSourceService 會自動處理音訊 encoder 初始化
         // 不需要手動 prime
 
