@@ -514,30 +514,29 @@ class ViewController: UIViewController {
                     print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀 (軌道 1)")
                 }
             } else if audioMode == .both {
-                // 雙聲道：使用合併的 async stream
-                let mergedStream = AsyncStream<(AVAudioPCMBuffer, AVAudioTime, Bool)> { continuation in
-                    Task {
-                        for await (buffer, time) in await audioSourceService.buffer {
-                            continuation.yield((buffer, time, true)) // true = 麥克風
+                // 雙聲道：參考 c388a7f 的方法，但正確實現軌道分配
+                async let micTask: Void = {
+                    for await (buffer, time) in await audioSourceService.buffer {
+                        // 麥克風發送到軌道 0
+                        if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
+                            await mixer.append(sampleBuffer, track: 0)
+                            print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀 (軌道 0)")
                         }
                     }
-                    Task {
-                        for await (buffer, time) in await wavAudioSourceService.buffer {
-                            continuation.yield((buffer, time, false)) // false = WAV
-                        }
-                    }
-                }
+                }()
 
-                for await (buffer, time, isMic) in mergedStream {
-                    // 創建 CMSampleBuffer 並指定正確的軌道
-                    if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
-                        let track = isMic ? 0 : 1  // 麥克風用軌道 0，WAV 用軌道 1
-                        await mixer.append(sampleBuffer, track: UInt8(track))
-                        print("\(isMic ? "🎙️ 麥克風" : "🎵 WAV") 音訊 buffer: \(buffer.frameLength) 幀 (軌道 \(track))")
-                    } else {
-                        print("❌ 無法創建 \(isMic ? "麥克風" : "WAV") 音訊 sample buffer")
+                async let wavTask: Void = {
+                    for await (buffer, time) in await wavAudioSourceService.buffer {
+                        // WAV 發送到軌道 1
+                        if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
+                            await mixer.append(sampleBuffer, track: 1)
+                            print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀 (軌道 1)")
+                        }
                     }
-                }
+                }()
+
+                // 等待兩個任務完成
+                _ = await (micTask, wavTask)
             }
         }
 
