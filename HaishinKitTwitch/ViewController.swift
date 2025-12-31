@@ -488,32 +488,42 @@ class ViewController: UIViewController {
         // 根據選擇的模式處理音訊
         let audioMode = currentAudioMode  // 捕獲主 actor 隔離的屬性
         audioCaptureTask = Task {
-            async let micTask: Void = {
-                if audioMode == .microphoneOnly || audioMode == .both {
-                    for await (buffer, time) in await audioSourceService.buffer {
-                        // 將麥克風音訊 buffer 送到 MediaMixer 軌道 0
-                        if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
-                            await mixer.append(sampleBuffer, track: 0)
+            if audioMode == .microphoneOnly {
+                // 只有麥克風
+                for await (buffer, time) in await audioSourceService.buffer {
+                    await mixer.append(buffer, when: time)
+                    print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
+                }
+            } else if audioMode == .wavOnly {
+                // 只有 WAV
+                for await (buffer, time) in await wavAudioSourceService.buffer {
+                    await mixer.append(buffer, when: time)
+                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
+                }
+            } else if audioMode == .both {
+                // 雙聲道：使用合併的 async stream
+                let mergedStream = AsyncStream<(AVAudioPCMBuffer, AVAudioTime, Bool)> { continuation in
+                    Task {
+                        for await (buffer, time) in await audioSourceService.buffer {
+                            continuation.yield((buffer, time, true)) // true = 麥克風
                         }
-                        print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀 (軌道 0)")
+                    }
+                    Task {
+                        for await (buffer, time) in await wavAudioSourceService.buffer {
+                            continuation.yield((buffer, time, false)) // false = WAV
+                        }
                     }
                 }
-            }()
 
-            async let wavTask: Void = {
-                if audioMode == .wavOnly || audioMode == .both {
-                    for await (buffer, time) in await wavAudioSourceService.buffer {
-                        // 將 WAV 音訊 buffer 送到 MediaMixer 軌道 1
-                        if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
-                            await mixer.append(sampleBuffer, track: 1)
-                        }
-                        print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀 (軌道 1)")
+                for await (buffer, time, isMic) in mergedStream {
+                    await mixer.append(buffer, when: time)
+                    if isMic {
+                        print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
+                    } else {
+                        print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
                     }
                 }
-            }()
-
-            // 同時運行選定的音訊來源
-            _ = await (micTask, wavTask)
+            }
         }
 
         // 根據模式啟動對應的服務
