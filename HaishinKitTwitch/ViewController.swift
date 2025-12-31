@@ -286,13 +286,10 @@ class ViewController: UIViewController {
                 try await mixer.addOutput(rtmpStream)  // 將 mixer 連接到 RTMP 串流
                 try await mixer.startRunning()
 
-                // 配置多軌道音訊混合
+                // 配置音訊混合 - 兩個來源都會自動混合
                 var audioMixerSettings = await mixer.audioMixerSettings
-                // 軌道 0: 麥克風 (通過 AudioEngineCapture)
-                audioMixerSettings.tracks[0] = .default
-                // 軌道 1: WAV 檔案播放
-                audioMixerSettings.tracks[1] = .default
-                audioMixerSettings.tracks[1]?.volume = 0.7 // WAV 音量設為 70%
+                // 預設設置，兩個音訊來源會自動平衡
+                audioMixerSettings.mainTrack = 0  // 主要軌道
                 await mixer.setAudioMixerSettings(audioMixerSettings)
 
                 // 2. 連接（URL 不包含 stream key）
@@ -411,24 +408,22 @@ class ViewController: UIViewController {
             }
         }
         
-        // --- 雙音訊來源直播 ---
-        // 同時運行麥克風捕獲和 WAV 檔案播放
+        // --- 麥克風音訊處理 ---
+        // 處理來自 AudioSourceService 的麥克風 buffer
+        Task {
+            for await buffer in await audioSourceService.buffer {
+                await mixer.append(buffer.0, when: buffer.1)
+                print("🎙️ 麥克風音訊 buffer: \(buffer.0.frameLength) 幀")
+            }
+        }
+
+        // --- WAV 檔案播放 ---
+        // 處理 WAV 檔案音訊
         audioCaptureTask = Task {
-            async let micTask: Void = {
-                // 麥克風音訊 - 通過 AudioEngineCapture 自動處理
-                print("🎙️ 麥克風音訊已啟動")
-            }()
-
-            async let wavTask: Void = {
-                // WAV 檔案播放 - 手動將數據送到 MediaMixer
-                for await (buffer, time) in await wavAudioSourceService.buffer {
-                    await mixer.append(buffer, when: time)
-                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
-                }
-            }()
-
-            // 同時運行兩個音訊來源
-            _ = await (micTask, wavTask)
+            for await (buffer, time) in await wavAudioSourceService.buffer {
+                await mixer.append(buffer, when: time)
+                print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
+            }
         }
 
         // 啟動 WAV 音訊服務
