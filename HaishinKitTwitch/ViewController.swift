@@ -19,6 +19,8 @@ enum AudioMode {
     case both             // 麥克風 + WAV
 }
 
+// 使用 AudioConverter 統一所有音訊格式
+
 class ViewController: UIViewController {
     
     // MARK: - Streaming Objects
@@ -64,7 +66,11 @@ class ViewController: UIViewController {
     private var audioCaptureTask: Task<Void, Never>?
     
     // 在 ViewController 類別中添加
-    private var mixer = MediaMixer()
+    // 參考 HaishinKit Screencast 示例：啟用多軌道音訊混合
+    private var mixer = MediaMixer(
+        captureSessionMode: .single,
+        multiTrackAudioMixingEnabled: true  // 🔑 關鍵：啟用多軌道音訊混合
+    )
     private var wavAudioSourceService: WAVAudioSourceService!
     private var wavAudioTask: Task<Void, Never>?
 
@@ -77,6 +83,7 @@ class ViewController: UIViewController {
 
     // 音訊控制UI
     private var audioModeControl: UISegmentedControl!
+
     
     // MARK: - Lifecycle
     override func viewDidLoad() {
@@ -101,7 +108,7 @@ class ViewController: UIViewController {
         view.addSubview(preview)
         previewView = preview
 
-        // === 新增：音訊模式控制 ===
+        // === 音訊模式控制 ===
         let audioControl = UISegmentedControl(items: ["🎙️ 麥克風", "🎵 WAV", "🎙️+🎵 雙聲道"])
         audioControl.translatesAutoresizingMaskIntoConstraints = false
         audioControl.selectedSegmentIndex = 2  // 預設選擇雙聲道
@@ -149,13 +156,13 @@ class ViewController: UIViewController {
             previewView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
             previewView.heightAnchor.constraint(equalTo: previewView.widthAnchor, multiplier: 9.0/16.0),
 
-            // 音訊控制器的約束
-            audioModeControl.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 20),
-            audioModeControl.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
-            audioModeControl.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
-            audioModeControl.heightAnchor.constraint(equalToConstant: 40),
+        // 音訊控制器的約束
+        audioModeControl.topAnchor.constraint(equalTo: previewView.bottomAnchor, constant: 20),
+        audioModeControl.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 20),
+        audioModeControl.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -20),
+        audioModeControl.heightAnchor.constraint(equalToConstant: 40),
 
-            startButton.topAnchor.constraint(equalTo: audioModeControl.bottomAnchor, constant: 20),
+        startButton.topAnchor.constraint(equalTo: audioModeControl.bottomAnchor, constant: 20),
             startButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 40),
             startButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -40),
             startButton.heightAnchor.constraint(equalToConstant: 50),
@@ -190,13 +197,13 @@ class ViewController: UIViewController {
             print("❌ 找不到 sample.wav 檔案")
             return
         }
-        
+
         do {
             // 1. 開啟檔案
             let file = try AVAudioFile(forReading: url)
             let sourceFormat = file.processingFormat // 這是 AVAudioFile 最喜歡的格式 (通常是 Float32)
             print("📄 原始檔案: \(file.fileFormat.sampleRate)Hz, \(file.fileFormat.channelCount)ch")
-            
+
             // 2. 讀取原始數據 (讀取為 Float32，這是最安全的操作，避開 Error -50)
             let frameCount = UInt32(file.length)
             guard let sourceBuffer = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: frameCount) else {
@@ -204,14 +211,12 @@ class ViewController: UIViewController {
                 return
             }
             try file.read(into: sourceBuffer)
-            
-            // 3. 定義我們「想要」的輸出格式
-            // Twitch 推薦：44100 Hz, 立體聲 (2ch), Int16
-            // 即使你的源文件是單聲道，這裡轉成立體聲可以讓聲音更飽滿，且符合 RTMP 標準
+
+            // 3. 定義目標格式 (16-bit, 44100Hz, 立體聲)
             guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                                                   sampleRate: 44100,
-                                                   channels: 2, // 強制轉為立體聲
-                                                   interleaved: true) else { return }
+                                                  sampleRate: 44100,
+                                                  channels: 2,
+                                                  interleaved: true) else { return }
             
             // 4. 建立轉換器
             guard let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
@@ -272,6 +277,7 @@ class ViewController: UIViewController {
     private func setupAudioSession() {
         Task {
             await audioSourceService.setUp(.audioEngine)
+            print("🎙️ 音訊服務已設置，將使用 AudioConverter 統一格式")
         }
     }
 
@@ -301,6 +307,7 @@ class ViewController: UIViewController {
             statusLabel.text = "音訊模式已切換為：\(modeText)\n請重新開始直播以應用更改"
         }
     }
+
 
     // MARK: - 2. 開始直播邏輯
     @objc func startStreaming(_ sender: Any) {
@@ -469,7 +476,7 @@ class ViewController: UIViewController {
         // 重置累加型時間戳
         self.audioPresentationTimeStamp = CMTime(value: 0, timescale: 44100)
         self.audioOffset = 0
-        
+
         startLocalAudioPlayback()
         
         // --- 視訊定時器 ---
@@ -489,16 +496,20 @@ class ViewController: UIViewController {
         let audioMode = currentAudioMode  // 捕獲主 actor 隔離的屬性
         audioCaptureTask = Task {
             if audioMode == .microphoneOnly {
-                // 只有麥克風
+                // 只有麥克風 - 使用軌道 0
                 for await (buffer, time) in await audioSourceService.buffer {
-                    await mixer.append(buffer, when: time)
-                    print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
+                    if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
+                        await mixer.append(sampleBuffer, track: 0)
+                    }
+                    print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀 (軌道 0)")
                 }
             } else if audioMode == .wavOnly {
-                // 只有 WAV
+                // 只有 WAV - 使用軌道 1
                 for await (buffer, time) in await wavAudioSourceService.buffer {
-                    await mixer.append(buffer, when: time)
-                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
+                    if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
+                        await mixer.append(sampleBuffer, track: 1)
+                    }
+                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀 (軌道 1)")
                 }
             } else if audioMode == .both {
                 // 雙聲道：使用合併的 async stream
@@ -516,11 +527,13 @@ class ViewController: UIViewController {
                 }
 
                 for await (buffer, time, isMic) in mergedStream {
-                    await mixer.append(buffer, when: time)
-                    if isMic {
-                        print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
+                    // 創建 CMSampleBuffer 並指定正確的軌道
+                    if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
+                        let track = isMic ? 0 : 1  // 麥克風用軌道 0，WAV 用軌道 1
+                        await mixer.append(sampleBuffer, track: UInt8(track))
+                        print("\(isMic ? "🎙️ 麥克風" : "🎵 WAV") 音訊 buffer: \(buffer.frameLength) 幀 (軌道 \(track))")
                     } else {
-                        print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
+                        print("❌ 無法創建 \(isMic ? "麥克風" : "WAV") 音訊 sample buffer")
                     }
                 }
             }
@@ -931,6 +944,7 @@ class ViewController: UIViewController {
 
         return sampleBuffer
     }
+
 
     // MARK: - Helper Methods
     private func showAlert(title: String, message: String) {
