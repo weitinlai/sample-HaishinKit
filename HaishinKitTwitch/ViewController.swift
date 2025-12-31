@@ -66,11 +66,7 @@ class ViewController: UIViewController {
     private var audioCaptureTask: Task<Void, Never>?
     
     // 在 ViewController 類別中添加
-    // 參考 HaishinKit Screencast 示例：啟用多軌道音訊混合
-    private var mixer = MediaMixer(
-        captureSessionMode: .single,
-        multiTrackAudioMixingEnabled: true  // 🔑 關鍵：啟用多軌道音訊混合
-    )
+    private var mixer = MediaMixer()
     private var wavAudioSourceService: WAVAudioSourceService!
     private var wavAudioTask: Task<Void, Never>?
 
@@ -497,47 +493,28 @@ class ViewController: UIViewController {
         // 根據選擇的模式處理音訊
         let audioMode = currentAudioMode  // 捕獲主 actor 隔離的屬性
         audioCaptureTask = Task {
-            if audioMode == .microphoneOnly {
-                // 只有麥克風 - 使用軌道 0
-                for await (buffer, time) in await audioSourceService.buffer {
-                    if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
-                        await mixer.append(sampleBuffer, track: 0)
-                    }
-                    print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀 (軌道 0)")
-                }
-            } else if audioMode == .wavOnly {
-                // 只有 WAV - 使用軌道 1
-                for await (buffer, time) in await wavAudioSourceService.buffer {
-                    if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
-                        await mixer.append(sampleBuffer, track: 1)
-                    }
-                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀 (軌道 1)")
-                }
-            } else if audioMode == .both {
-                // 雙聲道：參考 c388a7f 的方法，但正確實現軌道分配
-                async let micTask: Void = {
+            async let micTask: Void = {
+                if audioMode == .microphoneOnly || audioMode == .both {
                     for await (buffer, time) in await audioSourceService.buffer {
-                        // 麥克風發送到軌道 0
-                        if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
-                            await mixer.append(sampleBuffer, track: 0)
-                            print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀 (軌道 0)")
-                        }
+                        // 將麥克風音訊 buffer 送到 MediaMixer
+                        await mixer.append(buffer, when: time)
+                        print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
                     }
-                }()
+                }
+            }()
 
-                async let wavTask: Void = {
+            async let wavTask: Void = {
+                if audioMode == .wavOnly || audioMode == .both {
                     for await (buffer, time) in await wavAudioSourceService.buffer {
-                        // WAV 發送到軌道 1
-                        if let sampleBuffer = await createAudioSampleBuffer(from: buffer, time: time) {
-                            await mixer.append(sampleBuffer, track: 1)
-                            print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀 (軌道 1)")
-                        }
+                        // 將 WAV 音訊 buffer 送到 MediaMixer
+                        await mixer.append(buffer, when: time)
+                        print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
                     }
-                }()
+                }
+            }()
 
-                // 等待兩個任務完成
-                _ = await (micTask, wavTask)
-            }
+            // 同時運行選定的音訊來源
+            _ = await (micTask, wavTask)
         }
 
         // 根據模式啟動對應的服務
