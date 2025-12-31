@@ -84,6 +84,9 @@ class ViewController: UIViewController {
     // 音訊控制UI
     private var audioModeControl: UISegmentedControl!
 
+    // 動態檢測到的音訊格式
+    private var detectedSampleRate: Double = 44100
+
     
     // MARK: - Lifecycle
     override func viewDidLoad() {
@@ -212,9 +215,9 @@ class ViewController: UIViewController {
             }
             try file.read(into: sourceBuffer)
 
-            // 3. 定義目標格式 (16-bit, 44100Hz, 立體聲)
+            // 3. 定義目標格式 (16-bit, 48000Hz, 立體聲) - 匹配系統默認採樣率
             guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                                                  sampleRate: 44100,
+                                                  sampleRate: 48000,
                                                   channels: 2,
                                                   interleaved: true) else { return }
             
@@ -343,9 +346,8 @@ class ViewController: UIViewController {
                 }
                 
                 // 1. 設定編碼參數
-                // 音訊: 使用原始 WAV 檔案的格式（取樣率和聲道數）
-                // 音訊: 強制設定為 44100 和 2聲道 (因為 loadAudioFile 已經幫我們轉好了)
-                let audioSettings = AudioCodecSettings(bitRate: 128000, sampleRate: 44100)
+                // 音訊: 使用系統默認採樣率 (通常 48000Hz) 匹配麥克風輸入
+                let audioSettings = AudioCodecSettings(bitRate: 128000, sampleRate: 48000)
                 // HaishinKit 會自動檢測輸入數據是立體聲，這裡不需要額外設 channelCount (預設就是支援立體聲)
                 // 視頻: 720p 30fps
                 let videoSettings = VideoCodecSettings(videoSize: .init(width: 1280, height: 720), bitRate: 2500 * 1000)
@@ -923,10 +925,10 @@ class ViewController: UIViewController {
             )
         }
 
-        // 創建時間戳 - 使用標準採樣率
-        let sampleTime = CMTime(value: CMTimeValue(time.sampleTime), timescale: 44100)
+        // 創建時間戳 - 使用 48000Hz
+        let sampleTime = CMTime(value: CMTimeValue(time.sampleTime), timescale: 48000)
         var timing = CMSampleTimingInfo(
-            duration: CMTime(value: CMTimeValue(normalizedBuffer.frameLength), timescale: 44100),
+            duration: CMTime(value: CMTimeValue(normalizedBuffer.frameLength), timescale: 48000),
             presentationTimeStamp: sampleTime,
             decodeTimeStamp: .invalid
         )
@@ -949,10 +951,11 @@ class ViewController: UIViewController {
     }
 
     private func normalizeAudioBuffer(_ buffer: AVAudioPCMBuffer) async -> AVAudioPCMBuffer {
-        // 目標格式：16-bit, 44100Hz, 立體聲
+        // 動態目標格式：16-bit, 匹配當前buffer的採樣率, 立體聲
+        // 這樣可以避免採樣率轉換，只統一格式和聲道
         guard let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16,
-                                             sampleRate: 44100,
-                                             channels: 2,
+                                             sampleRate: buffer.format.sampleRate, // 保持原始採樣率
+                                             channels: 2, // 統一為立體聲
                                              interleaved: true) else {
             return buffer
         }
