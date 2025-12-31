@@ -53,6 +53,9 @@ class ViewController: UIViewController {
     private let audioSourceService = AudioSourceService()
     private var audioCaptureTask: Task<Void, Never>?
     
+    // 在 ViewController 類別中添加
+    private var mixer = MediaMixer()
+
     // UI
     @IBOutlet weak var statusLabel: UILabel!
     @IBOutlet weak var startButton: UIButton!
@@ -272,6 +275,10 @@ class ViewController: UIViewController {
                 try await rtmpStream.setAudioSettings(audioSettings)
                 try await rtmpStream.setVideoSettings(videoSettings)
                 
+                // 在 try await rtmpStream.setVideoSettings(videoSettings) 之後添加
+                try await mixer.addOutput(rtmpStream)  // 將 mixer 連接到 RTMP 串流
+                try await mixer.startRunning()
+
                 // 2. 連接（URL 不包含 stream key）
                 print("正在連線到: \(twitchRTMPURL)")
                 
@@ -317,6 +324,7 @@ class ViewController: UIViewController {
     @objc func stopStreaming(_ sender: Any) {
         Task {
             await audioSourceService.stopRunning()
+            try await mixer.stopRunning()
         }
         stopVirtualDataFeeds()
         Task {
@@ -387,12 +395,10 @@ class ViewController: UIViewController {
         }
         
         // --- 直播音訊捕獲 ---
-        // AudioSourceService 會自動將音訊數據發送到 RTMP 串流
-        // 不需要手動處理 buffer
         audioCaptureTask = Task {
-            for await (buffer, time) in audioSourceService.buffer {
-                // AudioSourceService 已經自動處理，直接使用即可
-                print("🎙️ 收到即時音訊 buffer: \(buffer.frameLength) 幀")
+            for await (buffer, time) in await audioSourceService.buffer {
+                // 將音訊 buffer 送到 MediaMixer
+                await mixer.append(buffer, when: time)
             }
         }
         
