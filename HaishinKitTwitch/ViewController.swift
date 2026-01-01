@@ -66,7 +66,7 @@ class ViewController: UIViewController {
     private var audioCaptureTask: Task<Void, Never>?
 
     // 在 ViewController 類別中添加
-    private var mixer = MediaMixer()
+    private var mixer = MediaMixer(multiTrackAudioMixingEnabled: true)
     private var wavAudioSourceService: WAVAudioSourceService!
     private var wavAudioTask: Task<Void, Never>?
     private var videoSendTask: Task<Void, Never>?
@@ -963,10 +963,11 @@ class ViewController: UIViewController {
             var audioMixerSettings = await mixer.audioMixerSettings
 
             // 設置主軌道
-            if currentAudioMode == .microphoneOnly || currentAudioMode == .both {
+            if currentAudioMode == .microphoneOnly {
                 audioMixerSettings.mainTrack = 0  // 麥克風作為主軌道
-            } else {
+            } else if currentAudioMode == .wavOnly {
                 audioMixerSettings.mainTrack = 1  // WAV 作為主軌道
+            } else if currentAudioMode == .both {
             }
 
             // 設置軌道音量
