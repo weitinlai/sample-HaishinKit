@@ -64,11 +64,12 @@ class ViewController: UIViewController {
     // 直播音訊捕獲服務
     private let audioSourceService = AudioSourceService()
     private var audioCaptureTask: Task<Void, Never>?
-    
+
     // 在 ViewController 類別中添加
     private var mixer = MediaMixer()
     private var wavAudioSourceService: WAVAudioSourceService!
     private var wavAudioTask: Task<Void, Never>?
+    private var videoSendTask: Task<Void, Never>?
 
     // UI
     @IBOutlet weak var statusLabel: UILabel!
@@ -351,20 +352,9 @@ class ViewController: UIViewController {
                 try await rtmpStream.setAudioSettings(audioSettings)
                 try await rtmpStream.setVideoSettings(videoSettings)
                 
-                // 在 try await rtmpStream.setVideoSettings(videoSettings) 之後添加
-                try await mixer.addOutput(rtmpStream)  // 將 mixer 連接到 RTMP 串流
+                // 設置 MediaMixer 並連接 RTMP 串流
+                try await mixer.addOutput(rtmpStream)
                 try await mixer.startRunning()
-
-                // 配置音訊混合 - 兩個獨立軌道
-                var audioMixerSettings = await mixer.audioMixerSettings
-                // 軌道 0: 麥克風音訊
-                audioMixerSettings.tracks[0] = .default
-                // 軌道 1: WAV 檔案播放，降低音量避免過大
-                audioMixerSettings.tracks[1] = .default
-                audioMixerSettings.tracks[1]?.volume = 0.7  // WAV 音量 70%
-                // 主軌道設為 0（麥克風）
-                audioMixerSettings.mainTrack = 0
-                await mixer.setAudioMixerSettings(audioMixerSettings)
 
                 // 2. 連接（URL 不包含 stream key）
                 print("正在連線到: \(twitchRTMPURL)")
@@ -391,7 +381,10 @@ class ViewController: UIViewController {
                     stopButton.alpha = 1.0
                 }
                 
-                // 4. 開始發送數據 (啟動虛擬引擎，包含音訊)
+                // 4. 設置音訊混合（硬體+軟體）
+                await setupAudioMixing()
+
+                // 5. 開始發送數據 (啟動虛擬引擎，只處理視頻)
                 await startVirtualDataFeeds()
                 
             } catch {
@@ -406,22 +399,15 @@ class ViewController: UIViewController {
     }
     
     @objc func stopStreaming(_ sender: Any) {
-        let audioMode = currentAudioMode  // 捕獲主 actor 隔離的屬性
-        Task {
-            // 總是停止麥克風服務（以防萬一）
-            await audioSourceService.stopRunning()
-
-            // 根據模式停止對應服務
-            if audioMode == .wavOnly || audioMode == .both {
-                await wavAudioSourceService.stopRunning()
-            }
-
-            try await mixer.stopRunning()
-        }
+        // 停止所有數據發送
         stopVirtualDataFeeds()
+
         Task {
             do {
+                // 停止 MediaMixer
+                try await mixer.stopRunning()
 
+                // 關閉 RTMP 連接
                 try await rtmpStream.close()
                 try await rtmpConnection.close()
                 await MainActor.run {
@@ -463,64 +449,43 @@ class ViewController: UIViewController {
 
     // 啟動虛擬數據流 (追趕式策略)
     private func startVirtualDataFeeds() async {
-        // AudioSourceService 會自動處理音訊 encoder 初始化
-        // 不需要手動 prime
+        // 音訊已經在 setupAudioMixing() 中通過 MediaMixer 處理
+        // 這裡只處理視頻數據
 
-        let startTime = CMClockGetTime(CMClockGetHostTimeClock())
-        
-        // 重置累加型時間戳
-        self.audioPresentationTimeStamp = CMTime(value: 0, timescale: 44100)
-        self.audioOffset = 0
-
+        // 啟動本機音訊播放（讓用戶可以在本機聽到聲音）
         startLocalAudioPlayback()
-        
-        // --- 視訊定時器 ---
-        videoTimer = Timer.scheduledTimer(withTimeInterval: 0.033, repeats: true) { [weak self] _ in
-            guard let self = self, let pixelBuffer = self.currentPixelBuffer else { return }
-            //let now = CMClockGetTime(CMClockGetHostTimeClock())
-            //let duration = CMTimeSubtract(now, startTime)
-            let pts = self.videoPTS
-            if let sampleBuffer = self.createVideoSampleBuffer(pixelBuffer: pixelBuffer, presentationTime: pts) {
-                Task { await self.rtmpStream.append(sampleBuffer) }
-                self.videoPTS = pts + self.videoFrameDuration
-            }
-        }
-        
-        // --- 統一音訊處理 ---
-        // 根據選擇的模式處理音訊
-        let audioMode = currentAudioMode  // 捕獲主 actor 隔離的屬性
-        audioCaptureTask = Task {
-            switch audioMode {
-            case .microphoneOnly:
-                // 只處理麥克風
-                await self.audioSourceService.startRunning()
-                for await (buffer, time) in await self.audioSourceService.buffer {
-                    await self.mixer.append(buffer, when: time)
-                    print("🎙️ 麥克風音訊 buffer: \(buffer.frameLength) 幀")
-                }
 
-            case .wavOnly:
-                // 只處理WAV
-                await self.wavAudioSourceService.startRunning()
-                for await (buffer, time) in await self.wavAudioSourceService.buffer {
-                    await self.mixer.append(buffer, when: time)
-                    print("🎵 WAV 音訊 buffer: \(buffer.frameLength) 幀")
-                }
-
-            case .both:
-                // 雙聲道模式：混合兩個來源
-                await self.mixAudioStreams()
-            }
-        }
-
-        // 根據模式啟動對應的服務
-        if audioMode == .wavOnly || audioMode == .both {
-            await wavAudioSourceService.startRunning()
-        }
-        
         // --- 圖片輪播 ---
         imageRotationTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            self?.rotateImage()
+            guard let self = self else { return }
+            Task { @MainActor in
+                await self.rotateImage()
+            }
+        }
+
+        // --- 視頻發送任務 ---
+        videoSendTask = Task {
+            // 持續發送視頻幀以維持串流活躍
+            while !Task.isCancelled {
+                do {
+                    guard let pixelBuffer = await MainActor.run(body: { self.currentPixelBuffer }) else {
+                        try await Task.sleep(nanoseconds: 100_000_000) // 0.1秒
+                        continue
+                    }
+
+                    let presentationTime = CMTime(seconds: CACurrentMediaTime(), preferredTimescale: 1000)
+
+                    if let sampleBuffer = self.createVideoSampleBuffer(pixelBuffer: pixelBuffer, presentationTime: presentationTime) {
+                        await self.mixer.append(sampleBuffer)
+                    }
+
+                    // 每秒發送 30 幀
+                    try await Task.sleep(nanoseconds: 33_333_333) // ~30fps
+                } catch {
+                    print("視頻發送錯誤: \(error)")
+                    break
+                }
+            }
         }
     }
     
@@ -621,12 +586,25 @@ class ViewController: UIViewController {
     }
     
     private func stopVirtualDataFeeds() {
+        // 取消所有任務
         videoTimer?.invalidate()
-        audioCaptureTask?.cancel()
+        videoSendTask?.cancel()
         imageRotationTimer?.invalidate()
+
+        // 清理資源
         videoTimer = nil
-        audioCaptureTask = nil
+        videoSendTask = nil
         imageRotationTimer = nil
+
+        // 停止音訊服務
+        Task {
+            if currentAudioMode == .microphoneOnly || currentAudioMode == .both {
+                await audioSourceService.stopRunning()
+            }
+            if currentAudioMode == .wavOnly || currentAudioMode == .both {
+                await wavAudioSourceService.stopRunning()
+            }
+        }
 
         // 停止本機音訊播放
         audioPlayerNode?.stop()
@@ -951,6 +929,59 @@ class ViewController: UIViewController {
         }
     }
 
+
+    // MARK: - Audio Mixing Setup (硬體+軟體混合)
+
+    private func setupAudioMixing() async {
+        do {
+            // 1. 硬體輸入：attach 麥克風到 MediaMixer
+            if currentAudioMode == .microphoneOnly || currentAudioMode == .both {
+                guard let audioDevice = AVCaptureDevice.default(for: .audio) else {
+                    print("❌ 找不到音訊裝置")
+                    return
+                }
+
+                try await mixer.attachAudio(audioDevice)
+                print("🎙️ 已將麥克風掛載為硬體輸入 (軌道 0)")
+            }
+
+            // 2. 軟體輸入：啟動 WAV 播放並發送到 MediaMixer
+            if currentAudioMode == .wavOnly || currentAudioMode == .both {
+                await wavAudioSourceService.startRunning()
+
+                // 在背景任務中持續發送 WAV buffer 到軌道 1
+                Task {
+                    for await (buffer, time) in await wavAudioSourceService.buffer {
+                        await mixer.append(buffer, when: time, track: 1)
+                        print("🎵 WAV buffer 已發送到軟體軌道 1: \(buffer.frameLength) 幀")
+                    }
+                }
+                print("🎵 已啟動 WAV 播放作為軟體輸入 (軌道 1)")
+            }
+
+            // 3. 配置音訊混合設置
+            var audioMixerSettings = await mixer.audioMixerSettings
+
+            // 設置主軌道
+            if currentAudioMode == .microphoneOnly || currentAudioMode == .both {
+                audioMixerSettings.mainTrack = 0  // 麥克風作為主軌道
+            } else {
+                audioMixerSettings.mainTrack = 1  // WAV 作為主軌道
+            }
+
+            // 設置軌道音量
+            if currentAudioMode == .both {
+                audioMixerSettings.tracks[0]?.volume = 1.0  // 麥克風音量 100%
+                audioMixerSettings.tracks[1]?.volume = 0.7  // WAV 音量 70%
+            }
+
+            await mixer.setAudioMixerSettings(audioMixerSettings)
+            print("⚙️ 音訊混合設置完成 - 主軌道: \(audioMixerSettings.mainTrack)")
+
+        } catch {
+            print("❌ 音訊混合設置失敗: \(error)")
+        }
+    }
 
     // MARK: - Helper Methods
     private func showAlert(title: String, message: String) {
