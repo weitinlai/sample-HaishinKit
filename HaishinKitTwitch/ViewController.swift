@@ -497,6 +497,42 @@ class ViewController: UIViewController {
         }
         
         do {
+            // 動態檢測並設定輸出路由
+            let session = AVAudioSession.sharedInstance()
+            
+            // 檢查當前輸出路由，判斷是否有藍牙或耳機連接
+            let currentRoute = session.currentRoute
+            var hasBluetooth = false
+            var hasHeadphones = false
+            
+            for output in currentRoute.outputs {
+                switch output.portType {
+                case .bluetoothHFP, .bluetoothA2DP, .bluetoothLE:
+                    hasBluetooth = true
+                    print("🎧 檢測到藍牙設備: \(output.portName)")
+                case .headphones, .headsetMic:
+                    hasHeadphones = true
+                    print("🎧 檢測到耳機: \(output.portName)")
+                default:
+                    break
+                }
+            }
+            
+            // 根據連接的設備動態設定輸出路由
+            if hasBluetooth {
+                // 有藍牙時，不使用強制揚聲器，讓系統自動路由到藍牙
+                try session.overrideOutputAudioPort(.none)
+                print("🔊 輸出路由：藍牙設備")
+            } else if hasHeadphones {
+                // 有耳機時，使用耳機
+                try session.overrideOutputAudioPort(.none)
+                print("🔊 輸出路由：耳機")
+            } else {
+                // 沒有藍牙或耳機時，使用揚聲器
+                try session.overrideOutputAudioPort(.speaker)
+                print("🔊 輸出路由：內建揚聲器")
+            }
+            
             // 創建 AVAudioEngine 用於本機播放
             let engine = AVAudioEngine()
             let playerNode = AVAudioPlayerNode()
